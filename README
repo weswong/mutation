@@ -1,0 +1,13 @@
+Fowards Time Simulation that adds mutations to each individual within the population at time t.
+essentially a WF model
+
+Time is measured in generations (specify generation size in the timestep paramter)
+
+Assume constant mutation rate across entire genome. No mutation hotspot locations
+Assumes infinite sites and infinite alleles model
+Location of mutation not explicitly modeled, although it might be added later on
+
+Things that are kept track of:
+Strain ID and the mutations it carries 
+
+Can output AFS
