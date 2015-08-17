@@ -4,69 +4,6 @@ import  numpy
 import numpy as np
 import math
 
-
-
-class Simulation:
-    def __init__(self):
-        self.sim_duration = 365   # days
-        self.sim_tstep = 2        # 2 days/mitotic generation
-        self.sim_N0 = 10
-        self.population = Population.instantiate_population(self.sim_N0)
-        self.output = 'simulation'
-        self.day = 0
-        
-    
-    
-    def update(self):
-        dt = self.sim_tstep
-        self.day += dt
-        
-        self.population.advance_generation(self.day)
-        print self.day
-        numpy.save(self.output + '/' + str(self.day), self.population.get_mutation_freqs())
-        
-    def run(self):
-        for t in range(self.sim_duration / self.sim_tstep):
-            self.update()
-            
-
-
-class Genome:
-    '''
-    Our genome. We only care about the Genome ID and the mutations it carries.
-    For simplicities sake, we are assuming infinite alleles model. Only way for two genomes
-    to have the same mutation is through inheritance
-    '''
-
-    newid = itertools.count().next
-    mutation_id = itertools.count().next
-    
-    def __init__(self, id=None, mutations=None, parent=None): 
-        if not id and not mutations:
-            self.id = Genome.newid()
-            self.mutations=[]
-            self.parent = 'origin'
-        else:
-            self.id = id
-            self.mutations = mutations
-            self.parent = parent
-        
-    
-    @classmethod
-    def add_mutation(cls, genome):
-        # assume infinite sites model
-        id = cls.newid()
-        mutation = genome.mutations + [cls.mutation_id()]
-        parent = genome
-        return cls(id, mutation, parent)
-
-
-def count_proportions(data):
-    counts = collections.Counter(data)
-    proportions = dict(zip(counts.keys(), counts.values() / np.sum(counts.values(), dtype=float)))
-    return proportions
-
-
 def asexual_demo_function(t):
     '''functions that determine the blood parasitemia within the host at any given time (post emergence). 
     Time is measured in days, after emergence of merozoites from liver
@@ -86,6 +23,10 @@ def asexual_demo_function(t):
     #N = numpy.power(10, log_N)
     return math.floor(N)
 
+def count_proportions(data):
+    counts = collections.Counter(data)
+    proportions = dict(zip(counts.keys(), counts.values() / np.sum(counts.values(), dtype=float)))
+    return proportions
 
 # skeleton code for liver stage dynamics...if needed? ignoring this for now
 '''def liver_stage(N0):
@@ -99,86 +40,132 @@ def asexual_demo_function(t):
     r = np.log(subpopulation_Nfinal / N0) / 5.0'''
     
 
+class Genome:
+    '''
+    Our genome. We only care about the Genome ID and the mutations it carries.
+    For simplicities sake, we are assuming infinite alleles model. Only way for two genomes
+    to have the same mutation is through inheritance
+    '''
 
+    newid = itertools.count().next
+    mutation_id = itertools.count().next
+    
+    def __init__(self, freq,id=None, mutations=None, ancestry=None): 
+        # add frequency here
+        if not id and not mutations:
+            self.id = Genome.newid()
+            self.mutations=[]
+        else:
+            self.id = id
+            self.mutations = mutations
+        if ancestry:
+            self.ancestry =[ancestry]
+        else:
+            self.ancestry = []
+        
+        self.freq = freq
+    
+    @classmethod
+    def make_children(cls, genome, n_children):
+        genome.n_children = n_children
+        genome.n_mutant_children = numpy.random.poisson(4.85e-9*2.3e7*genome.n_children) #mu = 4.85e-9, genome_size = 2.3e7
+        genome.n_nonmutant_children = genome.n_children - genome.n_mutant_children
+            
+    @classmethod
+    def add_mutation(cls, genome, N_next, number=1):
+        # assume infinite sites model
+        id = cls.newid()
+        mutation = genome.mutations + [cls.mutation_id() for _ in range(number)]
+        ancestry = genome.id
+        return cls(1./N_next, id, mutation, ancestry)
+    
+    @classmethod
+    def create_mutant_pool(cls, genome, mutants, N):
+        return [Genome.add_mutation(genome, N) for x in range(mutants)]
 
 class Population:
-    ''' our population'''
-    def __init__(self, genomes):
+    ''' Following the population dynamics of a single LINEAGE
+    a population here is defined as the family tree of a single genetically distinct
+    sporozoite
+    I do not simulate '''
+    
+    def __init__(self, strains, N_current):
+        self.strains = strains
+        self.generations = 0
         #genomes is a dictionary that shows the frequency of each genome object in the population
-        self.genomes = genomes
-        self.genome_stats = count_proportions(genomes)
         
-        self.unique_genomes = self.genome_stats.keys()
-        self.id = [genome.id for genome in self.genome_stats.keys()]
-        self.props = self.genome_stats.values()
-
+        self.N_current = N_current
+        
+        self.strain_id = [strain.id for strain in self.strains]
+        self.strain_freqs = [strain.freq for strain in self.strains]
+    
+    def __iter__(self):
+       for strain in self.strains:
+          yield strain
+    
     def get_population_stats(self):
-        return zip(self.id, self.props)
+        return zip([strain.id for strain in self.strains], [strain.freq for strain in self.strains])
     
     def get_mutation_freqs(self):
-        mutations = list(itertools.chain(*[genome.mutations for genome in self.genomes]))
-        return np.log(count_proportions(mutations).values())    
+        mutations = list(itertools.chain(*[strain.mutations for strain in self.strains]))
+        mutation_id, counts = np.unique(mutations, return_counts=True)
+        return mutation_id, counts / float(self.N_current)
+    
+    
+    @classmethod
+    def instantiate_population(cls, n_ihepatocytes):
+        # assume all success infected hepatocytes survive and are at the same frequency, change later
+        population = [Genome(1./n_ihepatocytes) for _ in range(n_ihepatocytes)]
+        #for strain in population:
+        #    strain.make_children(N_next)
+        
+        # start at emergence from liver
+        return cls(population, n_ihepatocytes)
+    
+    @classmethod
+    def advance_generation(cls, population, N_next):
+        mutant_pool = []
+        failed_genomes = []
+        n_sampling_population = 0
+        
+        sampling = numpy.random.choice(population.strains, size=N_next, p=population.strain_freqs)
+        sampled_strains, counts = numpy.unique(sampling, return_counts=True)
+        
+        for strain, count in zip(sampled_strains,counts):
+            Genome.make_children(strain, count)
+            mutants = Genome.create_mutant_pool(strain, strain.n_mutant_children, N_next)
+            mutant_pool += mutants
+            strain.freq = float(strain.n_nonmutant_children) / N_next
+
+        #updating stats
+        population.strains = list(sampled_strains) +mutant_pool    
+        population.N_current = N_next
+        population.generations += 1
+        population.strain_id = [strain.id for strain in population.strains]
+        population.strain_freqs = [strain.freq for strain in population.strains]
+
+class Simulation:
+    def __init__(self):
+        self.sim_duration = 4   # days
+        self.sim_tstep = 2        # 2 days/mitotic generation
+        self.sim_N0 = 10
+        self.output = 'simulation'
+        self.day = 0
+        self.population = Population.instantiate_population(10)
+    
     
     def update(self):
-        self.unique_genomes = self.genome_stats.keys()
-        self.id = [genome.id for genome in self.genome_stats.keys()]
-        self.props = self.genome_stats.values()
-        self.population_genomes = self.genomes
+        dt = self.sim_tstep
+        self.day += dt
         
-    @classmethod
-    def merge_population(cls, *arg):
-        genomes = []
-        for population in args:
-            genomes += population.genomes
-        return cls(genomes)
-    
-    @classmethod
-    def instantiate_population(cls, initialN):
-        population = [Genome() for _ in range(initialN)]
-        population_stats = count_proportions(population)
-        return cls(population)
-    
-    def resample_population(self, N):
-        # Can't go all the way up to 1e12, will determine optimum subsample size later
-        if N > 1e6:
-            N = 1e6
+        #Population.advance_generation(self.population, asexual_demo_funcion(self.day))
+        Population.advance_generation(self.population, 100)
+        print self.day
+        numpy.save(self.output + '/' + str(self.day) + '_' + str(self.population.N_current),self.population.get_mutation_freqs())
+        
+    def run(self):
+        for t in range(self.sim_duration / self.sim_tstep):
+            self.update()
             
-        sampling = np.random.choice(self.unique_genomes, N, p=self.props)
-        return sampling
-        #self.genome_stats = count_proportions(sampling)
-        #self.genomes = sampling
-        #self.update()
-        #return cls(population_stats)
-    
-    def mutate_population(self, N):
-        N=float(N)
-        mu = 4.85e-9
-        #mu = 0
-        if N > 1e6:
-            N = 1e6
-        mutation_events = numpy.random.poisson(mu * 2.3e7 * N)
-        if mutation_events ==0:
-            mutants = []
-        else:
-            vectorized_func = np.vectorize(Genome.add_mutation)
-            mutants = vectorized_func(np.random.choice(self.unique_genomes, mutation_events, p = self.props))
-        self.genomes = np.concatenate([mutants, self.resample_population(N-mutation_events)])
-                                                                                                                        
-        '''for idx in np.random.randint(0, len(self.genomes), mutation_events):
-            #print str(population.genomes[idx].id) + ' is mutating to ',
-            self.genomes[idx] = Genome.add_mutation(self.genomes[idx])
-            #print str(population.genomes[idx].id)'''
-        self.genome_stats = count_proportions(self.genomes)
-        self.update()
-        
-    def advance_generation(self, dt):
-        #dt = the day we are currently on, post emergence from liver
-        #self.resample_population(asexual_demo_function(dt))
-        self.mutate_population(asexual_demo_function(dt))
-        
-        
-
-simulation = Simulation()
-simulation.run()
-
-
+s = Simulation()
+s.run()
