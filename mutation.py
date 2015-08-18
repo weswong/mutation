@@ -3,7 +3,27 @@ import collections
 import  numpy
 import numpy as np
 import math
+import json
+import multiprocessing as mp
 
+#parallel processing functions  --------------------------------------------
+def mp_sample_with_replacement(data, n_sample, freq, lock, mp_dict):
+    sampling = np.random.choice(data, size=n_sample, p= freq)
+    sampled_strains, counts = np.unique(sampling, return_counts=True)
+    lock.acquire()
+    mp_dictionary(mp_dict, sampled_strains, counts)
+    lock.release()
+
+
+def mp_dictionary(d, sampled_strains, counts):
+    for strain, count in zip(sampled_strains,counts):
+        if strain in d.keys():
+            d[strain] += count
+        else:
+            d[strain] = count
+
+
+#general functions --------------------------------------------
 def asexual_demo_function(t):
     '''functions that determine the blood parasitemia within the host at any given time (post emergence). 
     Time is measured in days, after emergence of merozoites from liver
@@ -38,7 +58,8 @@ def count_proportions(data):
     subpopulation_Nfinal = demo_function/N0
     # merozoite emergence happens in 
     r = np.log(subpopulation_Nfinal / N0) / 5.0'''
-    
+
+#Classes ------------------------------------------------------------------
 
 class Genome:
     '''
@@ -58,30 +79,28 @@ class Genome:
         else:
             self.id = id
             self.mutations = mutations
+        
         if ancestry:
-            self.ancestry =[ancestry]
+            self.ancestry =ancestry
         else:
-            self.ancestry = []
+            self.ancestry = [self.id]
         
         self.freq = freq
     
-    @classmethod
-    def make_children(cls, genome, n_children):
-        genome.n_children = n_children
-        genome.n_mutant_children = numpy.random.poisson(4.85e-9*2.3e7*genome.n_children) #mu = 4.85e-9, genome_size = 2.3e7
-        genome.n_nonmutant_children = genome.n_children - genome.n_mutant_children
-            
+    
+    
     @classmethod
     def add_mutation(cls, genome, N_next, number=1):
         # assume infinite sites model
         id = cls.newid()
         mutation = genome.mutations + [cls.mutation_id() for _ in range(number)]
-        ancestry = genome.id
+        ancestry = genome.ancestry + [id]
         return cls(1./N_next, id, mutation, ancestry)
     
     @classmethod
     def create_mutant_pool(cls, genome, mutants, N):
         return [Genome.add_mutation(genome, N) for x in range(mutants)]
+        
 
 class Population:
     ''' Following the population dynamics of a single LINEAGE
@@ -111,6 +130,15 @@ class Population:
         mutation_id, counts = np.unique(mutations, return_counts=True)
         return mutation_id, counts / float(self.N_current)
     
+    def get_mutation_classes(self):
+        mutation_class_dict = {}
+        for strain in self.strains:
+            mutation_class = len(strain.mutations)
+            if mutation_class in mutation_class_dict.keys():
+                mutation_class_dict[mutation_class] += 1 * strain.freq * self.N_current
+            else:
+                mutation_class_dict[mutation_class] = 1 * strain.freq * self.N_current
+        return mutation_class_dict
     
     @classmethod
     def instantiate_population(cls, n_ihepatocytes):
@@ -124,45 +152,64 @@ class Population:
     
     @classmethod
     def advance_generation(cls, population, N_next):
-        mutant_pool = []
-        failed_genomes = []
-        n_sampling_population = 0
+	mutant_pool = []
         
-        sampling = numpy.random.choice(population.strains, size=N_next, p=population.strain_freqs)
-        sampled_strains, counts = numpy.unique(sampling, return_counts=True)
+        pop_mutants = numpy.random.poisson(4.85e-9*2.3e7*N_next)
+        if pop_mutants < N_next:
+            pop_nonmutants = N_next - pop_mutants
+        else:
+            pop_nonmutants = 0.
         
-        for strain, count in zip(sampled_strains,counts):
-            Genome.make_children(strain, count)
-            mutants = Genome.create_mutant_pool(strain, strain.n_mutant_children, N_next)
+        
+        nonmutant_sampling = numpy.random.choice(population.strains, size=pop_nonmutants, p=population.strain_freqs)
+        nonmutant_sampled_strains, nonmutant_counts = numpy.unique(nonmutant_sampling, return_counts=True)
+        for strain, count in zip(nonmutant_sampled_strains,nonmutant_counts):
+            strain.freq = float(count) / N_next
+            
+        mutant_sampling = numpy.random.choice(population.strains, size=pop_mutants, p = population.strain_freqs)
+        mutant_sampled_strains, mutant_counts = numpy.unique(mutant_sampling, return_counts = True)
+        for mutant_strain, count in zip(mutant_sampling, mutant_counts): 
+            mutants = Genome.create_mutant_pool(mutant_strain, count, N_next)
             mutant_pool += mutants
-            strain.freq = float(strain.n_nonmutant_children) / N_next
-
+        
         #updating stats
-        population.strains = list(sampled_strains) +mutant_pool    
+        population.strains = list(nonmutant_sampled_strains) + mutant_pool   
+        for strain in population.strains[0:10]:
+            print strain.__dict__ 
         population.N_current = N_next
         population.generations += 1
         population.strain_id = [strain.id for strain in population.strains]
         population.strain_freqs = [strain.freq for strain in population.strains]
-
+	#print zip(population.strain_id, population.strain_freqs)
+	
 class Simulation:
     def __init__(self):
-        self.sim_duration = 4   # days
+        self.sim_duration = 2   # days
         self.sim_tstep = 2        # 2 days/mitotic generation
         self.sim_N0 = 10
         self.output = 'simulation'
         self.day = 0
         self.population = Population.instantiate_population(10)
-    
+        self.capture_days = [2, 20, 46, 12, 25, 80]
     
     def update(self):
         dt = self.sim_tstep
         self.day += dt
         
         #Population.advance_generation(self.population, asexual_demo_funcion(self.day))
-        Population.advance_generation(self.population, 100)
-        print self.day
-        numpy.save(self.output + '/' + str(self.day) + '_' + str(self.population.N_current),self.population.get_mutation_freqs())
-        
+        if self.day > self.sim_duration:
+            print 'finish'
+        elif asexual_demo_function(self.day) < 1:
+            print 'no more parasites'
+        else:
+            Population.advance_generation(self.population, 1e7)
+            print self.day, asexual_demo_function(self.day)
+            if self.day == self.sim_duration or self.day in self.capture_days:
+                numpy.save(self.output + '/' + str(self.day) + '_' + str(self.population.N_current),self.population.get_mutation_freqs())
+                
+                with open(self.output + '/' + 'mutation_classes_{generation}.txt'.format(generation = self.population.generations), 'w') as outfile:
+                    json.dump(self.population.get_mutation_classes(), outfile)
+    
     def run(self):
         for t in range(self.sim_duration / self.sim_tstep):
             self.update()
