@@ -6,6 +6,7 @@ import math
 import json
 import pathos.multiprocessing as mp
 import sys
+import cProfile
 
 #general functions --------------------------------------------
 def asexual_demo_function(t):
@@ -142,23 +143,23 @@ class Population:
         return cls(population, n_ihepatocytes)
     
     def sampling(self, n_sample):
-        sampling = np.random.choice(self.strain_ids, size=n_sample, p=self.strain_freqs)
-        sampled_strains, counts = np.unique(sampling, return_counts=True)
-        return sampled_strains, counts
+        sampling = np.random.choice(len(self.strain_ids), size=n_sample, p=self.strain_freqs)
+        sampled_strain_idx, counts = np.unique(sampling, return_counts=True)
+        return sampled_strain_idx, counts
     
     @classmethod
     def calculate_freq(cls, population, zipped_list, N_next):
         nonmutant_sampling = []
-        for strain_id, count in zipped_list:
-            strain = population.strains[population.strain_ids.index(strain_id)]
+        for strain_idx, count in zipped_list:
+            strain = population.strains[strain_idx]
             strain.freq = float(count) / N_next
             nonmutant_sampling.append(strain)
         return nonmutant_sampling
     @classmethod
     def calculate_mutations(cls, population, zipped_list, N_next):
         mutant_pool = []
-        for mutant_id, count in zipped_list: 
-            mutant_strain = population.strains[population.strain_ids.index(mutant_id)]
+        for mutant_idx, count in zipped_list: 
+            mutant_strain = population.strains[mutant_idx]
             mutant_pool += Genome.create_mutant_pool(mutant_strain, count, N_next)
         return mutant_pool
 
@@ -173,17 +174,17 @@ class Population:
             pop_nonmutants = 0.
             pop_mutants = N_next        
         
-        nonmutant_sampled_strains, nonmutant_counts = population.sampling(pop_nonmutants)
+        nonmutant_idx, nonmutant_counts = population.sampling(pop_nonmutants)
         nommutant_sampling_strains = []
 
-        slices = chunks(zip(nonmutant_sampled_strains, nonmutant_counts), n_processes)
+        slices = chunks(zip(nonmutant_idx, nonmutant_counts), n_processes)
         results = [pool.apply_async(population.calculate_freq, args=(population, slice, N_next)) for slice in slices]
         nonmutant_sampling_strains = []
         for p in results:
             nonmutant_sampling_strains += p.get()
         
-        mutant_sampled_strains, mutant_counts = population.sampling(pop_mutants)
-        slices = chunks(zip(mutant_sampled_strains, mutant_counts), n_processes)
+        mutant_sampled_idx, mutant_counts = population.sampling(pop_mutants)
+        slices = chunks(zip(mutant_sampled_idx, mutant_counts), n_processes)
         mutant_pool = []
         results = [pool.apply_async(population.calculate_mutations, args=(population, slice, N_next)) for slice in slices]
         for p in results:
@@ -234,7 +235,7 @@ class Simulation:
             self.update()
             
 if __name__ == "__main__":
-    sys.argv[1] = n_processes
+    n_processes = int(sys.argv[1])
     pool = mp.Pool(processes = n_processes)
     s = Simulation()
     s.run()
