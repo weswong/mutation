@@ -22,7 +22,7 @@ def asexual_demo_function(t):
         coefficients = [8.11449765e-11, -1.27763731e-07, 6.28393586e-05, -2.97606465e-02, 3.57669339e+00]
     log_N = numpy.poly1d(coefficients)(t)
     #N = numpy.power(10, log_N) * 5000000
-    N = numpy.power(10, log_N)
+    N = numpy.power(10, log_N) * 10
     return math.floor(N)
 
 
@@ -137,7 +137,7 @@ class Population:
         return cls(population, n_ihepatocytes)
     
     def sampling(self, n_sample):
-        sampling = np.random.choice(self.strain_ids, size=n_sample, p=self.strain_freqs)
+        sampling = np.random.choice(len(self.strain_ids), size=n_sample, p=self.strain_freqs)
         sampled_strains, counts = np.unique(sampling, return_counts=True)
         return sampled_strains, counts
     
@@ -153,17 +153,17 @@ class Population:
             pop_mutants = N_next        
         
 
-        nonmutant_sampled_strains, nonmutant_counts = population.sampling(pop_nonmutants)
+        nonmutant_sampled_idx, nonmutant_counts = population.sampling(pop_nonmutants)
         nommutant_sampling_strains = []
-        for strain_id, count in zip(nonmutant_sampled_strains, nonmutant_counts):
-            strain = population.strains[population.strain_ids.index(strain_id)]
+        for strain_idx, count in zip(nonmutant_sampled_idx, nonmutant_counts):
+            strain = population.strains[strain_idx]
             nommutant_sampling_strains.append(strain)
             strain.freq = float(count) / N_next
         
-        mutant_sampled_strains, mutant_counts = population.sampling(pop_mutants)
+        nmutant_sampled_idx, mutant_counts = population.sampling(pop_mutants)
         mutant_pool = []
-        for mutant_id, count in zip(mutant_sampled_strains, mutant_counts): 
-            mutant_strain = population.strains[population.strain_ids.index(mutant_id)]
+        for mutant_idx, count in zip(nmutant_sampled_idx, mutant_counts): 
+            mutant_strain = population.strains[mutant_idx]
             mutants = Genome.create_mutant_pool(mutant_strain, count, N_next)
             mutant_pool += mutants
         
