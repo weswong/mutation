@@ -22,7 +22,7 @@ def asexual_demo_function(t):
         coefficients = [8.11449765e-11, -1.27763731e-07, 6.28393586e-05, -2.97606465e-02, 3.57669339e+00]
     log_N = numpy.poly1d(coefficients)(t)
     #N = numpy.power(10, log_N) * 5000000
-    N = numpy.power(10, log_N) * 10
+    N = numpy.power(10, log_N) * 200
     return math.floor(N)
 
 
@@ -56,30 +56,28 @@ class Genome:
 
     newid = itertools.count().next
     mutation_id = itertools.count().next
-    
     def __init__(self, freq,id=None, mutations=None, ancestry=None): 
         # add frequency here
-        if not id and not mutations:
+        if not id:
             self.id = Genome.newid()
             self.mutations=[]
+            self.ancestry = [self.id]
         else:
             self.id = id
             self.mutations = mutations
-        
-        if ancestry:
             self.ancestry =ancestry
-        else:
-            self.ancestry = [self.id]
         
         self.freq = freq
     
     
-    
+
     @classmethod
     def add_mutation(cls, genome, N_next, number=1):
         # assume infinite sites model
         id = cls.newid()
-        mutation = genome.mutations + [cls.mutation_id() for _ in range(number)]
+        genomes = genome.mutations
+        new = [cls.mutation_id() for _ in range(number)]
+        mutation = genomes + new
         ancestry = genome.ancestry + [id]
         return cls(1./N_next, id, mutation, ancestry)
     
@@ -181,7 +179,7 @@ class Population:
 	
 class Simulation:
     def __init__(self):
-        self.sim_duration = 366   # days
+        self.sim_duration = 180   # days
         self.sim_tstep = 2        # 2 days/mitotic generation
         self.sim_N0 = 10
         self.output = 'simulation'
@@ -200,8 +198,8 @@ class Simulation:
             print 'no more parasites'
         else:
             print 'starting day ', 
-            print self.day, asexual_demo_function(self.day)
-            Population.advance_generation(self.population,asexual_demo_function(self.day))
+            print self.day, 1e7
+            Population.advance_generation(self.population,1e7)
             #if self.day == self.sim_duration or self.day in self.capture_days:
             if self.day:
                 numpy.save(self.output + '/' + str(self.day) + '_' + str(self.population.N_current),self.population.get_mutation_freqs())
