@@ -4,23 +4,8 @@ import  numpy
 import numpy as np
 import math
 import json
-import multiprocessing as mp
+import pathos.multiprocessing as mp
 import sys
-#parallel processing functions  --------------------------------------------
-def mp_sample_with_replacement(data, n_sample, freq, lock, mp_dict):
-    numpy.random.seed()
-    sampling = np.random.choice(data, size=n_sample, p= freq)
-    sampled_strains, counts = np.unique(sampling, return_counts=True)
-    with lock:
-        mp_dictionary(mp_dict, sampled_strains, counts)
-
-def mp_dictionary(d, sampled_strains, counts):
-    for strain, count in zip(sampled_strains,counts):
-        if strain in d.keys():
-            d[strain] += count
-        else:
-            d[strain] = count
-
 
 #general functions --------------------------------------------
 def asexual_demo_function(t):
@@ -39,12 +24,15 @@ def asexual_demo_function(t):
         coefficients = [8.11449765e-11, -1.27763731e-07, 6.28393586e-05, -2.97606465e-02, 3.57669339e+00]
     log_N = numpy.poly1d(coefficients)(t)
     #N = numpy.power(10, log_N) * 5000000
-    N = numpy.power(10, log_N)
+    N = numpy.power(10, log_N) * 100
     return math.floor(N)
 
-
-def chunks(l, n):
-    return [l[i:i+n] for i in range(0, len(l), n)]
+def chunks(l, pieces):
+    if len(l) <= 1 or len(l) / pieces == 0:
+        return [l]
+    else:
+        n = len(l) / pieces
+        return [l[i:i+n] for i in range(0, len(l), n)]
 
 def count_proportions(data):
     counts = collections.Counter(data)
@@ -152,18 +140,28 @@ class Population:
         
         # start at emergence from liver
         return cls(population, n_ihepatocytes)
-
-    def mp_sampling(self, n_processes, n_sample):
-            #shared dictionary across all the processes that keeps track of the number of times each strain has been sampled
-            mgrdict = mp.Manager().dict()
-            processes = [mp.Process(target=mp_sample_with_replacement, args=(self.strain_ids, float(n_sample)/n_processes, self.strain_freqs,lock, mgrdict)) for step in range(0, n_processes)]
-            correction_factor = float(n_sample) % n_processes 
-            processes[-1] = mp.Process(target=mp_sample_with_replacement, args=(self.strain_ids, float(n_sample)/n_processes + correction_factor, self.strain_freqs,lock, mgrdict))
-            for p in processes:
-                p.start()
-                p.join()
-            return mgrdict
     
+    def sampling(self, n_sample):
+        sampling = np.random.choice(self.strain_ids, size=n_sample, p=self.strain_freqs)
+        sampled_strains, counts = np.unique(sampling, return_counts=True)
+        return sampled_strains, counts
+    
+    @classmethod
+    def calculate_freq(cls, population, zipped_list, N_next):
+        nonmutant_sampling = []
+        for strain_id, count in zipped_list:
+            strain = population.strains[population.strain_ids.index(strain_id)]
+            strain.freq = float(count) / N_next
+            nonmutant_sampling.append(strain)
+        return nonmutant_sampling
+    @classmethod
+    def calculate_mutations(cls, population, zipped_list, N_next):
+        mutant_pool = []
+        for mutant_id, count in zipped_list: 
+            mutant_strain = population.strains[population.strain_ids.index(mutant_id)]
+            mutant_pool += Genome.create_mutant_pool(mutant_strain, count, N_next)
+        return mutant_pool
+
     
     @classmethod
     def advance_generation(cls, population, N_next):        
@@ -175,28 +173,24 @@ class Population:
             pop_nonmutants = 0.
             pop_mutants = N_next        
         
-
-        nonmutant_sampling_dict = population.mp_sampling(n_processes, pop_nonmutants)
+        nonmutant_sampled_strains, nonmutant_counts = population.sampling(pop_nonmutants)
         nommutant_sampling_strains = []
-        for strain_id, count in zip(nonmutant_sampling_dict.keys(),nonmutant_sampling_dict.values()):
-            strain = population.strains[population.strain_ids.index(strain_id)]
-            nommutant_sampling_strains.append(strain)
-            strain.freq = float(count) / N_next
+
+        slices = chunks(zip(nonmutant_sampled_strains, nonmutant_counts), n_processes)
+        results = [pool.apply_async(population.calculate_freq, args=(population, slice, N_next)) for slice in slices]
+        nonmutant_sampling_strains = []
+        for p in results:
+            nonmutant_sampling_strains += p.get()
         
-        mutant_sampling_dict = population.mp_sampling(n_processes, pop_mutants)
+        mutant_sampled_strains, mutant_counts = population.sampling(pop_mutants)
+        slices = chunks(zip(mutant_sampled_strains, mutant_counts), n_processes)
         mutant_pool = []
-        for mutant_id, count in zip(mutant_sampling_dict.keys(), mutant_sampling_dict.values()): 
-            mutant_strain = population.strains[population.strain_ids.index(mutant_id)]
-            mutants = Genome.create_mutant_pool(mutant_strain, count, N_next)
-            mutant_pool += mutants
-               
-        
-        
-        
-        
+        results = [pool.apply_async(population.calculate_mutations, args=(population, slice, N_next)) for slice in slices]
+        for p in results:
+            mutant_pool += p.get()
         
         #updating stats
-        population.strains = list(nommutant_sampling_strains) + mutant_pool   
+        population.strains = list(nonmutant_sampling_strains) + mutant_pool 
         for strain in population.strains[0:10]:
             print strain.__dict__ 
         population.N_current = N_next
@@ -204,7 +198,6 @@ class Population:
         population.strain_ids = [strain.id for strain in population.strains]
         population.strain_freqs = [strain.freq for strain in population.strains]
 	#print zip(population.strain_id, population.strain_freqs)
-        print sum(population.strain_freqs)
 	
 class Simulation:
     def __init__(self):
@@ -226,11 +219,11 @@ class Simulation:
         elif asexual_demo_function(self.day) < 1:
             print 'no more parasites'
         else:
-            print 'starting',
-            print self.day
-            Population.advance_generation(self.population, asexual_demo_function(self.day))
+            print 'starting day ', 
             print self.day, asexual_demo_function(self.day)
-            if self.day == self.sim_duration or self.day in self.capture_days:
+            Population.advance_generation(self.population,asexual_demo_function(self.day))
+            #if self.day == self.sim_duration or self.day in self.capture_days:
+            if self.day:
                 numpy.save(self.output + '/' + str(self.day) + '_' + str(self.population.N_current),self.population.get_mutation_freqs())
                 
                 with open(self.output + '/' + 'mutation_classes_{day}.txt'.format(day = self.day), 'w') as outfile:
@@ -241,8 +234,8 @@ class Simulation:
             self.update()
             
 if __name__ == "__main__":
-    lock = mp.Lock()
-    n_processes= int(sys.argv[1])
+    sys.argv[1] = n_processes
+    pool = mp.Pool(processes = n_processes)
     s = Simulation()
     s.run()
     
